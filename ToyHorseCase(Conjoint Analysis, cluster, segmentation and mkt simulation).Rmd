@@ -1,0 +1,287 @@
+---
+title: "Analytics design-HW3"
+output: pdf_document
+date: "2/9/2020"
+author: MSBA Team11
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## load library and datasets
+
+```{r}
+rm(list = ls())
+library(cluster)
+library(fpc)
+require("cluster")
+require("fpc")
+require("factoextra")
+require("gridExtra")
+library(fpc)
+library(factoextra)
+library(gridExtra)
+library('reshape')
+load(file='GBA424 - Toy Horse Case Data.Rdata')
+```
+
+########## Part A ##############
+A. Use Regression to estimate the conjoint model at the individual level
+• Produce part-utilities to pass to part B
+• Produce predictions for missing profiles (4 profiles) to pass to part D
+
+Each parent rated a total of 12 profiles. 
+total:16 profiles
+```{r}
+# divide the conjontData into two parts: one for part-utilities, and another for prediction
+predictData  = conjointData[is.na(conjointData$ratings),]
+regData = conjointData[!is.na(conjointData$ratings),]
+
+## part-utilities & predictions
+df = c()
+for (i in unique(regData$ID)){
+  data = regData[regData$ID == i,]
+  pre.Data = predictData[predictData$ID == i,]
+  model = lm(ratings ~ price + size + motion + style,data)
+  df = c(df,model[['coefficients']])
+  profile.pre = predict(model,pre.Data)
+  for (m in 1:length(profile.pre)){
+      predictData[predictData$ID==i,][m,]$ratings=profile.pre[[m]]
+  }
+}
+dim(df) = c(5,200)
+df = t(df)
+df = data.frame(df)
+colnames(df) = c('Intercept','price-119.99','size-26inches','motion-Rocking','style-Glamour')
+
+# part-utilities
+part.utilities = df
+# after adding the predictions
+conjont.Data = rbind(regData,predictData)
+conjont.Data = conjont.Data[order(conjont.Data$ID,conjont.Data$profile),]
+
+```
+
+########## Part B ##############
+B. Conduct Benefit Segmentation via Cluster Analysis of Conjoint Part-Utilities.
+• Use cluster analysis on the part-utilities (including the constant)
+• Test at least two cluster analysis schemes (i.e., number of clusters) and select the
+best one in your view. Justify this decision.
+• Interpret the segments in the chosen scheme and identify the ideal product for
+each segment
+
+```{r}
+########Evaluate number of clusters to use on data with visualizations
+clustTest = function(toClust,print=TRUE,scale=TRUE,maxClusts=15,seed=12345,nstart=20,iter.max=100){
+  if(scale){ toClust = scale(toClust);}
+  set.seed(seed);   # set random number seed before doing cluster analysis
+  wss <- (nrow(toClust)-1)*sum(apply(toClust,2,var))
+  for (i in 2:maxClusts) wss[i] <- sum(kmeans(toClust,centers=i,nstart=nstart,iter.max=iter.max)$withinss)
+  ##gpw essentially does the following plot using wss above. 
+  #plot(1:maxClusts, wss, type="b", xlab="Number of Clusters",ylab="Within groups sum of squares")
+  gpw = fviz_nbclust(toClust,kmeans,method="wss",iter.max=iter.max,nstart=nstart,k.max=maxClusts) #alternative way to get wss elbow chart.
+  pm1 = pamk(toClust,scaling=TRUE)
+  ## pm1$nc indicates the optimal number of clusters based on 
+  ## lowest average silhoutte score (a measure of quality of clustering)
+  #alternative way that presents it visually as well.
+  gps = fviz_nbclust(toClust,kmeans,method="silhouette",iter.max=iter.max,nstart=nstart,k.max=maxClusts) 
+  if(print){
+    grid.arrange(gpw,gps, nrow = 1)
+  }
+  list(wss=wss,pm1=pm1$nc,gpw=gpw,gps=gps)
+}
+
+clustTest(part.utilities) # cluster = 3
+```
+```{r}
+########Runs a set of clusters as kmeans
+runClusts = function(toClust,nClusts,print=TRUE,maxClusts=15,seed=12345,nstart=20,iter.max=100){
+  if(length(nClusts)>4){
+    warning("Using only first 4 elements of nClusts.")
+  }
+  kms=list(); ps=list();
+  for(i in 1:length(nClusts)){
+    kms[[i]] = kmeans(toClust,nClusts[i],iter.max = iter.max, nstart=nstart)
+    ps[[i]] = fviz_cluster(kms[[i]], geom = "point", data = toClust) + ggtitle(paste("k =",nClusts[i]))
+   
+  }
+  library(gridExtra)
+  if(print){
+    tmp = marrangeGrob(ps, nrow = 2,ncol=2)
+    print(tmp)
+  }
+  list(kms=kms,ps=ps)
+}
+cluster.selection=runClusts(part.utilities,c(3,4,5)) # according to the graphs, cluster =3 is the best option
+cluster_3 = cluster.selection$kms[[1]]
+cluster_3 #result
+```
+
+```{r}
+########Plots a kmeans cluster as three plot report
+plotClust = function(km,toClust,discPlot=FALSE){
+  nc = length(km$size)
+  if(discPlot){par(mfrow=c(2,2))}
+  else {par(mfrow=c(3,1))}
+  percsize = paste(1:nc," = ",format(km$size/sum(km$size)*100,digits=2),"%",sep="")
+  pie(km$size,labels=percsize,col=1:nc)
+  
+  clusplot(toClust, km$cluster, color=TRUE, shade=TRUE,
+           labels=2, lines=0,col.clus=1:nc); #plot clusters against principal components
+  
+  if(discPlot){
+    plotcluster(toClust, km$cluster,col=km$cluster); #plot against discriminant functions ()
+  }
+  rng = range(km$centers)
+  dist = rng[2]-rng[1]
+  locs = km$centers+.05*dist*ifelse(km$centers>0,1,-1)
+  bm = barplot(km$centers,beside=TRUE,col=1:nc,main="Cluster Means",ylim=rng+dist*c(-.1,.1))
+  text(bm,locs,formatC(km$centers,format="f",digits=1))
+}
+plotClust(cluster_3,part.utilities)
+```
+
+########## Part C ##############
+C. Conduct a priori segmentation.
+• Conduct a priori segmentation using the variables gender and age in order to
+profile the attribute preferences based on these variables (use segment-level
+regressions)
+• Test whether these a priori segmentation variables affect the part-utilities. What
+does this test tell you about these as segmentation schemes?
+• If the differences are meaningful, profile the segment-level attribute preferences
+and identify the ideal product for the a priori segments.
+
+```{r}
+survData = merge(regData,respondentData,by='ID')
+
+reg_gender = lm(ratings ~ (price + size + motion + style):gender,survData)
+summary(reg_gender)
+
+reg_age = lm(ratings ~ (price + size + motion + style):age,survData)
+summary(reg_age)
+##the differences are meaningful
+```
+```{r}
+## a priori segmentation:gender
+gender_0M = survData[survData$gender == 0,]
+reg_genderM = lm(ratings ~ price + size + motion + style,gender_0M)
+# reg_genderM$coefficients
+summary(reg_genderM)
+
+gender_1F = survData[survData$gender == 1,]
+reg_genderF = lm(ratings ~ price + size + motion + style,gender_1F)
+# reg_genderF$coefficients
+summary(reg_genderF)
+```
+
+
+```{r}
+## a priori segmentation:age
+age_0.2 = survData[survData$age == 0,]
+reg_age_2 = lm(ratings ~ price + size + motion + style,age_0.2)
+# reg_age_2$coefficients
+summary(reg_age_2)
+
+
+age_1.34 = survData[survData$age == 1,]
+reg_age_34 = lm(ratings ~ price + size + motion + style,age_1.34)
+# reg_age_34$coefficients
+summary(reg_age_34)
+```
+
+########## Part D ##############
+D. Simulate market shares for different product-line scenarios.
+• Use disaggregate analysis with a first choice rule to forecast market shares. Using
+these market shares and the information about costs in the case, calculate
+profitability for each product in the product line as well as the overall
+profitability for the firm.
+• You should present at least 4 scenarios that try to identify the best possible
+product line strategy given considerations related to competitive response,
+cannibalization, profitability, and long-run performance.
+• Be sure to briefly justify why you chose the scenarios you chose!
+
+
+total annual market size is 4,000 units
+variable cost:
+18" Rocking $33
+26" Rocking $41
+18" Bouncing $21
+26" Bouncing $29
+
+Costs = 20,000/year * #products + $20,000/3 *#products not in existing set
+```{r}
+ratings = conjont.Data[,1:3]
+ratings = cast(ratings,formula =ID~profile)
+
+simFCShares = function(scen,data,ascend=FALSE){
+  decs = data.frame()
+  inmkt = data[,scen] #construct the subsetted matrix of options
+  if(ascend){ #if ranks 1 is best
+    bestOpts = apply(inmkt,1,which.min)  #identify which option is best = min
+  } else { #else the best rank is the largest number
+    bestOpts = apply(inmkt,1,which.max) #identify which option is best = max
+  }
+  for (i in 1:nrow(inmkt)){
+      for (m in 1:length(inmkt[i,])){
+          if (inmkt[i,m] == inmkt[i,bestOpts[i]]){
+             decs[i,m] = 1
+          }else{
+              decs[i,m] = 0
+          }
+      }
+      if (rowSums(decs)[i]>1){
+          decs[i,][decs[i,]!=0] = 1/rowSums(decs)[i]
+      }
+  }
+
+  # decs = as.data.frame(model.matrix(~0+as.factor(bestOpts))) #fill to set of options marked 0 or 1
+  shs = colSums(decs)/sum(decs) #assumes that total decisions is market size
+  names(shs) = names(inmkt) #attach labels
+  shs
+}
+
+# colmeans = colMeans(ratings) 
+# age = prop.table(table(respondentData$age))
+# age
+# gender = prop.table(table(respondentData$gender))
+# gender
+
+```
+
+```{r}
+###Set up scenarios
+# 7 is the competitor's product
+# 5 and 13 are the current products
+# cluster prefer proflie:4 14 16; 3 clusters of sizes 80, 53, 67
+# age-2:16, age3-4:12, male:16, female:4
+
+scens = list()
+scens[[1]]=c(5,7,13) # current market
+scens[[2]]= c(5,7,13,16)       
+scens[[3]]= c(5,7,13,4) 
+scens[[4]]= c(5,7,12,13)
+scens[[5]]= c(5,7,13,14)
+scens[[6]]= c(5,7,16)
+scens[[7]]= c(5,8,13,16)       
+scens[[8]]= c(5,8,13,4) 
+scens[[9]]= c(5,8,12,13)
+scens[[10]]= c(5,8,13,14)
+scens[[11]]= c(5,8,16)
+scens[[12]]= c(5,8,4)
+scens[[13]]= c(8,14,16)
+scens[[14]]= c(8,4,16)
+scens[[15]]= c(8,4,14,16)
+scens[[16]]= c(8,4,12,16)
+scens[[17]]= c(8,4,12)
+scens[[18]]= c(8,12,16)
+scens[[19]]= c(8,12,14)
+scens[[20]]= c(8,4,12,14)
+
+for (i in 1:length(scens)){
+    n = simFCShares(scens[[i]],ratings[,2:17])
+    print(n)
+}
+
+```
+

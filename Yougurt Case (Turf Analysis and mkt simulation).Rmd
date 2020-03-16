@@ -1,0 +1,251 @@
+---
+title: "Analytics Design-HW2"
+output: pdf_document
+author: MSBA Team11
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+load library
+
+```{r}
+rm(list = ls())
+library(foreign)
+library(lubridate)
+library(ggplot2)
+library(data.table)
+```
+
+## read data
+
+```{r}
+setwd("~/Desktop/UR/GBA 424 analytics design/assignment/2")
+surv = read.csv('survResponses.csv')
+```
+
+## Data cleaning
+```{r}
+surv = surv[surv$V10 == 1,] #choose the completed responses
+surv$ResTime = as.numeric(mdy_hm(surv$V9) - mdy_hm(surv$V8)) #calculate the response time
+median(surv$ResTime) #12
+quantile(surv$ResTime) #75%:16
+surv= surv[surv$ResTime<16*1.5,] #delete the responses which are longer than 24
+
+surv = surv[,-c(2:14,38)]
+surv = surv[rowSums(is.na(surv)) != ncol(surv), ] #remove the rows that are all NAs
+names(surv)[2:24] = c('Almond','Banana','Black Cherry',
+                     'Blueberry','Caramel','Chai','Chocolate',
+                     'Cinnamon','Coconut','Honey','Key Lime Pie',
+                     'Lemon','Mango','Maple','Peach','Pineapple','Plain',
+                     'Pomegranate','Raspberry','Strawberry',
+                     'Strawberry Banana','Vanilla','Vanilla Banana') # alter the columns' name
+
+```
+
+##### OUTPUT FOR SLIDE 3 (Q1)#####
+SQL code
+```{r}
+# Use retailer1;
+# select Class,Flavor1,sum(Sales) as sales
+# from storeItemSales left join itemsAttributes on storeItemSales.`Item.Num`= itemsAttributes.`Item.Num`
+# where Class = 'Greek'
+# group by Class,Flavor1;
+```
+
+##### OUTPUT FOR SLIDE 4 (Q2)#####
+SQL code
+```{r}
+# select Class,Flavor1,sum(Sales) as sales
+# from storeItemSales left join itemsAttributes on storeItemSales.`Item.Num`= itemsAttributes.`Item.Num`
+# where Class = 'Regular'
+# group by Class,Flavor1
+# order by sales desc;
+```
+
+##### OUTPUT FOR SLIDE 5 (Q3)#####
+```{r}
+sur = copy(surv)
+sur[,2:24][is.na(sur[,2:24])]<- 2 #replace all the NA in col 2-24 with 2(never)
+l = {}
+# calculate the frequency of 1
+for (i in 1:23){
+    a = sur[sur[i+1]==c(1),i+1]
+    l[names(sur[,2:24][i])] = sum(a)
+}
+l = as.data.frame(l)
+names(l) = 'fre-1'
+
+# calculate the frequency of 0
+fre_0 = c()
+for (i in 1:23){
+    a = sur[sur[i+1]==c(0),i+1]
+    fre_0[names(sur[,2:24][i])] = length(a) # count 0 (regular)
+}
+l = cbind(l,fre_0)
+
+# calculate the frequency of 2
+fre_2 = c()
+for (i in 1:23){
+    a = sur[sur[i+1]==c(2),i+1]
+    fre_2[names(sur[,2:24][i])] = length(a)  # count 2 (Never)
+}
+l = cbind(l,fre_2)
+
+# define the weight function
+weight = function(data){
+    w = data[[1]] + 2*data[[2]] + 0*data[[3]]
+    return(w)
+}
+
+# calculate the index
+pre = c()
+for (i in 1:23){
+    pre[i] = weight(l[i,])
+}
+l = cbind(l,pre)
+l
+# calculate the percentage of respondents that are willing to purchase Black Cherry
+nrow(surv[surv$`Black Cherry`==c(0,1),])/nrow(surv)
+```
+
+##### OUTPUT FOR SLIDE 6 (Q4) #####
+```{r}
+# replace all the 0 with 1
+for (j in 2:24 ){
+    for (i in 1:742){
+        if(is.na(surv[i,j])==FALSE){
+            if (surv[i,j] == 0){
+                surv[i,j] = 1
+            }
+        }
+
+    }
+}
+
+# replace all the 2 with 0
+for (j in 2:24 ){
+    for (i in 1:742){
+        if(is.na(surv[i,j])==FALSE){
+            if (surv[i,j] == 2){
+                surv[i,j] = 0
+            }
+        }
+    }
+}
+
+
+measReach = function(data){
+    if(is.null(dim(data))){ #if data is a vector
+        ret = sum(data>0,na.rm=TRUE)/length(data)
+    } else if(ncol(data)==1){ #if data has only one column
+        ret = sum(data>0,na.rm=TRUE)/length(data)
+    }
+    else { #if data has multiple columns
+        ret = sum(apply(data>0,1,any),na.rm=TRUE)/nrow(data)
+    }
+}
+
+evalNext = function(nextSet,set,data,measure=measReach){
+    vals = numeric(length(nextSet)) 
+    for(k in 1:length(nextSet)){ 
+        if(length(set)==0){         
+            vals[k] = measure(data[,nextSet[k]]) 
+        } else {                    
+            vals[k] = measure(data[,c(set,nextSet[k])])
+        }
+    }
+    vals
+}
+
+evalFull = function(fullSet,data,origSet=numeric(0),measure=measReach){
+    curSet = origSet; 
+    remSet = fullSet[!(fullSet%in%origSet)]; 
+    K = length(remSet)
+    optVals = numeric(K);
+    ordSet = numeric(K); 
+    for(i in 1:K){         
+        tmpVals = evalNext(remSet,curSet,data,measure); 
+        k = which.max(tmpVals) 
+        optVals[i] = tmpVals[k] 
+        ordSet[i] = remSet[k]   
+        curSet = c(curSet,ordSet[i]); 
+        remSet = remSet[-k];          
+    }
+    
+    turf = list(ordSet=ordSet,optVals=optVals,origSet=origSet,origVal=measure(data[,origSet]),measure=measure,pnames=colnames(data))
+    class(turf)="TURF" 
+    turf 
+}
+
+#creates ggplot barplot for a turf object
+plot.TURF=function(turf,...){
+    if(class(turf)!="TURF"){
+        cat("Object not a turf.")
+    } else {
+        df = with(turf,data.frame(vals = c(origVal,optVals),titles=paste(0:length(ordSet),c("Original",pnames[ordSet]),sep=":")))
+        dodge = position_dodge(width=.75);
+        gp = ggplot(df,aes(y=vals,x=titles))
+        gp + geom_bar(position=dodge,fill='orange',stat="identity",width=.75)+
+            geom_text(aes( y = vals, label = round(vals, 4)),nudge_y = 0.1)+
+            theme(axis.text.x = element_text(angle = 90))
+    }
+}
+
+# fullSet contains all the flavors, origSet contains the existing six flavors
+flavors = surv[,2:24]
+turf = evalFull(c(1:23),flavors,c(4,17,22,10,15,20))
+plot(turf)
+```
+
+#####SQL CODE#####
+```{r}
+# Use retailer1;
+# /* Q1 */
+# /* Each brand */
+# select Class,Brand,Flavor1,sum(Sales) as sales
+# from storeItemSales left join itemsAttributes on storeItemSales.`Item.Num`= itemsAttributes.`Item.Num`
+# where Class = 'Greek'
+# group by Class,Brand,Flavor1
+# order by Brand;
+# 
+# 
+# /* All brands */
+# select Class,Flavor1,sum(Sales) as sales
+# from storeItemSales left join itemsAttributes on storeItemSales.`Item.Num`= itemsAttributes.`Item.Num`
+# where Class = 'Greek'
+# group by Class,Flavor1;
+# 
+# 
+# /* Q2 */
+# select Class,Flavor1,sum(Sales) as sales
+# from storeItemSales left join itemsAttributes on storeItemSales.`Item.Num`= itemsAttributes.`Item.Num`
+# where Class = 'Regular'
+# group by Class,Flavor1
+# order by sales desc;
+# 
+# /* our brand */
+# select Class,Brand,Flavor1,sum(Sales) as sales
+# from storeItemSales left join itemsAttributes on storeItemSales.`Item.Num`= itemsAttributes.`Item.Num`
+# where Class = 'Greek' and Brand = 'PVTLBL'
+# group by Class,Brand,Flavor1
+# order by Brand;
+
+```
+
+#####Additional Analysis#####
+```{r}
+
+# Calculate the percentage of sales of existing flavors in the Greek yogurt category of our own brand(PVTLBL)
+# in order to see what flavors did we launch and how they perform in the market;
+
+# select Class,Brand,Flavor1,sum(Sales) as sales
+# from storeItemSales left join itemsAttributes on storeItemSales.`Item.Num`= itemsAttributes.`Item.Num`
+# where Class = 'Greek' and Brand = 'PVTLBL'
+# group by Class,Brand,Flavor1
+# order by Brand;
+```
+
